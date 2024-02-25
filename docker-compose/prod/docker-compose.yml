@@ -1,6 +1,37 @@
 services: #Service here is actually the container
+  # event-driven capabilities using rabbitmq
+  rabbit:
+    image: rabbitmq:3.12-management
+    hostname: rabbitmq
+    ports:
+    - "5672:5672"
+    - "15672:15672"
+    healthcheck:
+      test: rabbitmq-diagnostics chck_port_connectivity
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 5s
+    extends:
+      file: common-config.yml
+      service: network-deploy-service
+
+  # authorization server 
+  keycloak:
+    image: quay.io/keycloak/keycloak:22.0.1
+    container_name: keycloak
+    ports:
+      - "7080:8080"
+    environment:
+      KEYCLOAK_ADMIN: "admin" #username for management console / administration
+      KEYCLOAK_ADMIN_PASSWORD: "admin" #password for management console / administration
+    command: "start-dev"
+    extends:
+      file: common-config.yml
+      service: network-deploy-service
+
 #==== Observability services - begins =============================
-  read: #Read component of loki for reading the logs for Graphana UI
+  read: #Read component (microservice running loki component) for reading the logs for Graphana UI
     image: grafana/loki:2.9.2
     command: "-config.file=/etc/loki/config.yaml -target=read" #runs the command for the container
     ports:
@@ -21,7 +52,7 @@ services: #Service here is actually the container
         aliases:
           - loki
 
-  write: #Write component of loki for writing the logs to minio, incoming records from promtail-->gateway server-->write component
+  write: #Write component(microservice running loki component) for writing the logs to minio, incoming records from promtail-->gateway server-->write component
     image: grafana/loki:2.9.2
     command: "-config.file=/etc/loki/config.yaml -target=write" #runs the command for the container
     ports:
@@ -105,7 +136,7 @@ services: #Service here is actually the container
       file: common-config.yml
       service: network-deploy-service
 
-  grafana:
+  grafana: #is the visualization tool that collects metrics & logs and allows debugging/tracing and proactive monitoring
     image: grafana/grafana:latest
     environment:
       - GF_PATHS_PROVISIONING=/etc/grafana/provisioning
@@ -131,7 +162,7 @@ services: #Service here is actually the container
       file: common-config.yml
       service: network-deploy-service #use the network settings from common file to make redis part of same network
 
-  gateway:
+  gateway: #Gateway required for graphana, read & write serice components use this gateway to save and fetch data from minio
     image: nginx:latest
     depends_on:
       - read
@@ -215,7 +246,7 @@ services: #Service here is actually the container
       service: network-deploy-service #use the network settings from common file to make redis part of same network
 
   configserver:
-    image: "stmum0107/configserver:s11"
+    image: "stmum0107/configserver:s13"
     container_name: configserver-ms
     ports:
       - "8071:8071"    
@@ -233,7 +264,7 @@ services: #Service here is actually the container
       OTEL_SERVICE_NAME: "configserver"    #tells openTelemetry the service-name, can be different than application/service name. 
 
   eurekaserver:
-    image: "stmum0107/eurekaserver:s11"
+    image: "stmum0107/eurekaserver:s13"
     container_name: eurekaserver-ms
     ports:
       - "8070:8070"
@@ -252,7 +283,7 @@ services: #Service here is actually the container
       OTEL_SERVICE_NAME : eurekaserver #tells openTelemetry the service-name, can be different than application/service name.                   
 
   accounts:
-    image: "stmum0107/accounts:s11"
+    image: "stmum0107/accounts:s13"
     container_name: accounts-ms
     ports:
       - "8080:8080"
@@ -261,16 +292,20 @@ services: #Service here is actually the container
       interval: 20s #retry intervals
       timeout: 5s #inside each check, wait for 5s max to declare the retry attemt as timed out
       retries: 20 #keep retrying 10 times if there is a failure
-      start_period: 10s #execute teh health check command only ater 10secons      
+      start_period: 10s #execute teh health check command only ater 10secons   
+    depends_on:
+      rabbit: # or the demo of event-driven, account service depends on rabbitmq to send messages
+        condition: service_healthy     
     environment:
       SPRING_APPLICATION_NAME: "accounts" #override the application-name defined in application.yml
-      OTEL_SERVICE_NAME : accounts #tells openTelemetry the service-name, can be different than application/service name.                         
+      OTEL_SERVICE_NAME : accounts #tells openTelemetry the service-name, can be different than application/service name. 
+      SPRING_RABBITMQ_HOST: rabbit # service-name of rabbitmq that is defined above - for connecting to rabbitmq. the other properties like connection credeitnals & port-no are defined in microservice settings
     extends:
       file: common-config.yml
       service: microservices-eurekaserver-config
 
   loans:
-    image: "stmum0107/loans:s11"
+    image: "stmum0107/loans:s13"
     container_name: loans-ms
     ports:
       - "8090:8090"
@@ -288,7 +323,7 @@ services: #Service here is actually the container
       service: microservices-eurekaserver-config
            
   cards:
-    image: "stmum0107/cards:s11"
+    image: "stmum0107/cards:s13"
     container_name: cards-ms
     ports:
       - "9000:9000"
@@ -304,9 +339,21 @@ services: #Service here is actually the container
     extends:
       file: common-config.yml
       service: microservices-eurekaserver-config
-      
+
+  message: #microservice to send and receive messages to/from the broker
+    image: "stmum0107/message:s13"    
+    container_name: message-ms
+    depends_on:
+      rabbit:
+        condition: service_healthy
+    environment:
+      SPRING_RABBITMQ_HOST: "rabbit" # service name of the container running rabbitmq.
+    extends:
+      file: common-config.yml
+      service: network-deploy-service #use the network settings from common file to make redis part of same network      
+     
   gatewayserver:
-    image: "stmum0107/gatewayserver:s11"
+    image: "stmum0107/gatewayserver:s13"
     container_name: gatewayserver-ms
     ports:
       - "8072:8072"
@@ -336,3 +383,4 @@ networks:
     
     
     
+
