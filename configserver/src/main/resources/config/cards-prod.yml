@@ -1,0 +1,12 @@
+
+build:
+  version: "1.0"
+
+accounts:
+  message: "Welcome to FFC bank cards related prod APIs "
+  contactDetails:
+    name: "Sarita Tiwari - Product Owner- loans"
+    email: "sarita@futuraforge.com"
+  onCallSupport:
+  - (617) 432-2356
+  - (936) 564-8721    

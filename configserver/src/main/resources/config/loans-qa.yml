@@ -1,0 +1,12 @@
+
+build:
+  version: "2.0"
+
+accounts:
+  message: "Welcome to FFC bank accounts related QA APIs "
+  contactDetails:
+    name: "Sarita Tiwari - QA Lead - loans"
+    email: "sarita@futuraforge.com"
+  onCallSupport:
+  - (666) 265-3765
+  - (666) 734-8371

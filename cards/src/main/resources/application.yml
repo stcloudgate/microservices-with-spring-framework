@@ -1,0 +1,78 @@
+server:
+  port: 9000
+spring:
+  application:
+    name: "cards"
+  profiles:
+    active: "qa"
+  datasource:
+# H2 configurations start here --  
+    url: jdbc:h2:mem:testdb
+    driverClassName: org.h2.Driver
+    username: sa
+    password: ''
+  h2:
+    console:
+      enabled: true
+  jpa:
+    database-platform: org.hibernate.dialect.H2Dialect
+    hibernate:
+      ddl-auto: update
+    show-sql: true
+# H2 configurations end here --
+  config:
+    import: "optional:configserver:http://localhost:8071"
+  
+# settings to expose all actuator endpoints - to implement auto-refresh capability    
+management:
+  endpoints: #to enable management end-points to be included in the expose list for the microservice
+    web:
+      exposure:
+        include: "*"
+  health: #To enable the health-related end-points for supporting the health probes and establishing the container startup sequence dependencies 
+    readiness-state:
+      enabled: true
+    liveness-state:
+      enabled: true        
+  endpoint: # to enable actuator url for degistering from eureka server upon shutdown - for graceful shutdowns
+    shutdown:
+      enabled: true
+    health: # to enable the health-probes while creating the containers - enables to check if the service is started and is healthy, only then next dependent container will be created 
+      probes:
+        enabled: true       
+  info: #the information for eureka dashboard is deliverd using actuator endpoints - this setting enables info related actuator urls & causes picking of details mentioned in info tag below.
+    env:
+      enabled: true
+  metrics: #required by micrometer. this tells micrometer & prometheus to group all metrics of this microservices under application name = $(spring.application.name). 
+    tags:
+      application: $(spring.application.name)        
+
+endpoints: #Exposes the shutdown related APIs from actuator endpoints
+  shutdown:
+    enabled: true
+
+eureka: #Configurations required for eureka client
+  instance:
+    preferIpAddress: true #Causes registration of accounts service using ip address of accounts, hostnames are used typically when DNS is attached
+  client:
+    fetchRegistry: true #to fetch teh registry
+    registerWithEureka: true #to register with eureka server
+    serviceUrl:
+      defaultZone: http://localhost:8070/eureka/ #endpoint of eureka server
+
+info: #Information that appears in eureka dashboard
+  app:
+    name: "cards" #name
+    description: "FFC Bank cards Application"
+    version: "1.0.0"
+            
+logging: # telling the springboot framework to print all looging messages in futuraforge package, that are of type debug.
+  level:
+    com:
+      futuraforge:
+        cards: DEBUG  
+  pattern:
+    level: "%5 [$(spring.application.name), %X{trace_id}, %X{span_id}]" #PAtern for open telemetry tracing        
+                
+                
+                

@@ -1,0 +1,49 @@
+spring:
+  application:
+    name: "configserver"
+  profiles:
+    # active: native #native is requireedfor classpath or filesystem based config stores only
+    active: git
+  cloud:
+    config:
+      server:
+        # native:
+          # search-locations: "classpath:/config"
+          # search-locations: "file:///Users/stmum0107/Documents/workspace-spring-tool-suite-4-4.20.0.RELEASE/configserver/src/main/resources/config"
+        git:
+          uri: "https://github.com/stprojects3006/futuraforge-config.git"
+          default-label: main #look for main branch by default
+          timeout: 5
+          clone-on-start: true #load the configs when config server starte, not when the requrest is made to avoid any loading related latencies
+          force-pull: true # always pull for mteh repo overriding any local changes 
+  
+  # Provide rabitMQ connection details - since the spring cloud config monitor will use the spring cloud bus under the hood - 
+  # which is required to publish the refreshed configs to all subscribers.
+  # IT is part of spring node
+  rabbitmq:
+    host: "localhost"
+    port: 5672
+    username: "guest"
+    password: "guest"
+
+# Enable all endpoints of actuator - we will consume the refresh endpoint to refresh configurations at runtime
+management:
+  endpoints:
+    web:
+      exposure:
+        include: "*"
+  health:
+    readiness-state:
+      enabled: true
+    liveness-state:
+      enabled: true
+  endpoint:
+    health:
+      probes:
+        enabled: true          
+                  
+encrypt:
+  key: "010701242212ANISANJSARANS243122" # key using which the configs are encrypted in the conig-store, in production pull it from key-vaults.
+
+server:
+  port: 8071

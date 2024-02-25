@@ -1,0 +1,329 @@
+services: #Service here is actually the container
+#==== Observability services - begins =============================
+  read:
+    image: grafana/loki:2.9.2
+    command: "-config.file=/etc/loki/config.yaml -target=read"
+    ports:
+      - 3101:3100
+      - 7946
+      - 9095
+    volumes:
+      - ../observability/loki/loki-config.yaml:/etc/loki/config.yaml
+    depends_on:
+      - minio
+    healthcheck:
+      test: [ "CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3100/ready || exit 1" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: &loki-dns
+      futuraforge:
+        aliases:
+          - loki
+
+  write:
+    image: grafana/loki:2.9.2
+    command: "-config.file=/etc/loki/config.yaml -target=write"
+    ports:
+      - 3102:3100
+      - 7946
+      - 9095
+    volumes:
+      - ../observability/loki/loki-config.yaml:/etc/loki/config.yaml
+    healthcheck:
+      test: [ "CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3100/ready || exit 1" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    depends_on:
+      - minio
+    networks:
+      <<: *loki-dns
+
+  promtail:
+    image: grafana/promtail:2.9.2
+    volumes:
+      - ../observability/promtail/promtail-local-config.yaml:/etc/promtail/config.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: -config.file=/etc/promtail/config.yaml
+    depends_on:
+      - gateway
+    extends:
+      file: common-config.yml
+      service: network-deploy-service #use the network settings from common file to make redis part of same network
+
+  minio:
+    image: minio/minio
+    entrypoint:
+      - sh
+      - -euc
+      - |
+        mkdir -p /data/loki-data && \
+        mkdir -p /data/loki-ruler && \
+        minio server /data
+    environment:
+      - MINIO_ROOT_USER=loki
+      - MINIO_ROOT_PASSWORD=supersecret
+      - MINIO_PROMETHEUS_AUTH_TYPE=public
+      - MINIO_UPDATE=off
+    ports:
+      - 9000
+    volumes:
+      - ./.data/minio:/data
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:9000/minio/health/live" ]
+      interval: 15s
+      timeout: 20s
+      retries: 5
+    extends:
+      file: common-config.yml
+      service: network-deploy-service #use the network settings from common file to make redis part of same network
+
+  prometheus:
+    image: prom/prometheus:v2.48.0
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ../observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+    extends:
+      file: common-config.yml
+      service: network-deploy-service
+
+
+  grafana:
+    image: grafana/grafana:latest
+    environment:
+      - GF_PATHS_PROVISIONING=/etc/grafana/provisioning
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+    depends_on:
+      - gateway
+    entrypoint:
+      - sh
+      - -euc
+      - |
+        mkdir -p /etc/grafana/provisioning/datasources
+        cat <<EOF > /etc/grafana/provisioning/datasources/ds.yaml
+        apiVersion: 1
+        datasources:
+          - name: Loki
+            type: loki
+            access: proxy
+            url: http://gateway:3100
+            jsonData:
+              httpHeaderName1: "X-Scope-OrgID"
+            secureJsonData:
+              httpHeaderValue1: "tenant1"
+        EOF
+        /run.sh
+    ports:
+      - "3000:3000"
+    healthcheck:
+      test: [ "CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    extends:
+      file: common-config.yml
+      service: network-deploy-service #use the network settings from common file to make redis part of same network
+
+
+  gateway:
+    image: nginx:latest
+    depends_on:
+      - read
+      - write
+    entrypoint:
+      - sh
+      - -euc
+      - |
+        cat <<EOF > /etc/nginx/nginx.conf
+        user  nginx;
+        worker_processes  5;  ## Default: 1
+
+        events {
+          worker_connections   1000;
+        }
+
+        http {
+          resolver 127.0.0.11;
+
+          server {
+            listen             3100;
+
+            location = / {
+              return 200 'OK';
+              auth_basic off;
+            }
+
+            location = /api/prom/push {
+              proxy_pass       http://write:3100\$$request_uri;
+            }
+
+            location = /api/prom/tail {
+              proxy_pass       http://read:3100\$$request_uri;
+              proxy_set_header Upgrade \$$http_upgrade;
+              proxy_set_header Connection "upgrade";
+            }
+
+            location ~ /api/prom/.* {
+              proxy_pass       http://read:3100\$$request_uri;
+            }
+
+            location = /loki/api/v1/push {
+              proxy_pass       http://write:3100\$$request_uri;
+            }
+
+            location = /loki/api/v1/tail {
+              proxy_pass       http://read:3100\$$request_uri;
+              proxy_set_header Upgrade \$$http_upgrade;
+              proxy_set_header Connection "upgrade";
+            }
+
+            location ~ /loki/api/.* {
+              proxy_pass       http://read:3100\$$request_uri;
+            }
+          }
+        }
+        EOF
+        /docker-entrypoint.sh nginx -g "daemon off;"
+    ports:
+      - "3100:3100"
+    healthcheck:
+      test: ["CMD", "service", "nginx", "status"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    extends:
+      file: common-config.yml
+      service: network-deploy-service #use the network settings from common file to make redis part of same network
+#==== Observability services - ends =============================
+
+  redis: #redis service required for rete-limiter patern
+    image: redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: [ "CMD-SHELL", "redis-cli ping | grep PONG" ] #As iven in redis official documentations
+      timeout: 10s
+      retries: 10
+    extends:
+      file: common-config.yml
+      service: network-deploy-service #use the network settings from common file to make redis part of same network
+
+  configserver:
+    image: "stmum0107/configserver:s11"
+    container_name: configserver-ms
+    ports:
+      - "8071:8071"    
+    # check if the configserver is ready to accept the traffic, keep probing untill it is ready and then proceed with next service creation  
+    healthcheck:
+      test: "curl --fail --silent localhost:8071/actuator/health/readiness |grep UP || exit 1" 
+      interval: 10s #retry intervals
+      timeout: 5s #inside each check, wait for 5s max to declare the retry attemt as timed out
+      retries: 10 #keep retrying 10 times if there is a failure
+      start_period: 10s #execute teh health check command only ater 10secons
+    extends:
+      file: common-config.yml
+      service: microservices-base-config #extends deployment and network properties to this configserver service
+
+  eurekaserver:
+    image: "stmum0107/eurekaserver:s11"
+    container_name: eurekaserver-ms
+    ports:
+      - "8070:8070"
+    # check if the eurekaserver is ready to accept the registration, keep probing untill it is ready and then proceed with next service creation    
+    healthcheck:
+      test: "curl --fail --silent localhost:8070/actuator/health/readiness |grep UP || exit 1" 
+      interval: 10s #retry intervals
+      timeout: 5s #inside each check, wait for 5s max to declare the retry attemt as timed out
+      retries: 10 #keep retrying 10 times if there is a failure
+      start_period: 10s #execute teh health check command only ater 10secons
+    extends:
+      file: common-config.yml
+      service: microservices-configserver-config #extends deployment and network properties to this eurekaserver service
+    environment:
+      SPRING_APPLICATION_NAME: "eurekaserver"             
+
+  accounts:
+    image: "stmum0107/accounts:s11"
+    container_name: accounts-ms
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: "curl --fail --silent localhost:8080/actuator/health/readiness |grep UP || exit 1" 
+      interval: 10s #retry intervals
+      timeout: 5s #inside each check, wait for 5s max to declare the retry attemt as timed out
+      retries: 10 #keep retrying 10 times if there is a failure
+      start_period: 10s #execute teh health check command only ater 10secons      
+    environment:
+      SPRING_APPLICATION_NAME: "accounts" #override the application-name defined in application.yml
+    extends:
+      file: common-config.yml
+      service: microservices-eurekaserver-config
+
+  loans:
+    image: "stmum0107/loans:s11"
+    container_name: loans-ms
+    ports:
+      - "8090:8090"
+    healthcheck:
+      test: "curl --fail --silent localhost:8090/actuator/health/readiness |grep UP || exit 1" 
+      interval: 10s #retry intervals
+      timeout: 5s #inside each check, wait for 5s max to declare the retry attemt as timed out
+      retries: 10 #keep retrying 10 times if there is a failure
+      start_period: 10s #execute teh health check command only ater 10secons         
+    environment:
+      SPRING_APPLICATION_NAME: "loans" #override the application-name defined in application.yml       
+    extends:
+      file: common-config.yml
+      service: microservices-eurekaserver-config
+           
+  cards:
+    image: "stmum0107/cards:s11"
+    container_name: cards-ms
+    ports:
+      - "9000:9000"
+    healthcheck:
+      test: "curl --fail --silent localhost:9000/actuator/health/readiness |grep UP || exit 1" 
+      interval: 10s #retry intervals
+      timeout: 5s #inside each check, wait for 5s max to declare the retry attemt as timed out
+      retries: 10 #keep retrying 10 times if there is a failure
+      start_period: 10s #execute teh health check command only ater 10secons         
+    environment:
+      SPRING_APPLICATION_NAME: "cards" #override the application-name defined in application.yml        
+    extends:
+      file: common-config.yml
+      service: microservices-eurekaserver-config
+      
+  gatewayserver:
+    image: "stmum0107/gatewayserver:s11"
+    container_name: gatewayserver-ms
+    ports:
+      - "8072:8072"
+    depends_on:
+      accounts:
+        condition: service_healthy # start gateway service container once the accounts service is runing and ready       
+      loans:
+        condition: service_healthy # start gateway service container once the loans service is runing and ready       
+      cards:
+        condition: service_healthy # start gateway service container once the cards service is runing and ready       
+      redis:
+        condition: service_healthy # start gateway service container once the redis service is runing and ready                    
+    environment:
+      SPRING_APPLICATION_NAME: "gatewayserver" #override the application-name defined in application.yml
+      SPRING_DATA_REDIS_CONNECT-TIMEOUT: 2s #conection timeout setting
+      SPRING_DATA_REDIS_HOST: redis #set the host name where redis server is running
+      SPRING_DATA_REDIS_PORT: 6379 #set the port number of redis server
+      SPRING_DATA_REDIS_TIMEOUT: 1s #set the data timeout             
+    extends:
+      file: common-config.yml
+      service: microservices-eurekaserver-config
+
+networks:
+  futuraforge:
+    driver: "bridge" #define the network driver forthe network named as futuraforge in above services
+    
+    
+    

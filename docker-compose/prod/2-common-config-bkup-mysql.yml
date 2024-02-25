@@ -1,0 +1,51 @@
+services:
+  network-deploy-service:
+    networks:
+      - futuraforge #all services that are in this network will be able to communicate using the service name 
+
+# the following section is required for mysql based containers - not used so commenting it
+  microservice-db-config:
+    extends:
+      service: network-deploy-service 
+    image: mysql
+    healthcheck:
+      test:["CMD","mysqladmin", "ping", "-h", "localhost"]
+      timeout: 10s
+      retries: 10
+      interval: 10s
+      start_period: 10s
+    environment:
+      MYSQL_ROOT_PASSWORD: root      
+
+  microservices-base-config:
+    extends:
+      service: network-deploy-service
+    deploy:
+      resources: #deploy resource constraints like memory, storage ro cpu
+        limits:
+          memory: 700m
+    environment: 
+      SPRING_RABBITMQ_HOST: "rabbit"    
+      
+  microservices-configserver-config:
+    extends:
+      service: microservices-base-config
+    depends_on: #defines a dependency criteria for the service
+      configserver: #service on which accounts service depends on
+        condition: service_healthy #dependency condition, accounts service will be created only if the configserver is in healthy_status  
+    environment:
+      SPRING_PROFILES_ACTIVE: prod #override the active profile defined in the application.yml 
+      SPRING_CONFIG_IMPORT: "configserver:http://configserver:8071/" #overrides the config server connection defined in local application.yml file
+      #following two variables are required for mysql connectivity, we are using H2 so commented these.
+      SPRING_DATASOURCE_USERNAME: root
+      SPRING_DATASOURCE_PASSWORD: root
+
+  microservices-eurekaserver-config:
+    extends:
+      service: microservices-configserver-config
+    depends_on: #defines a dependency criteria for the service
+      eurekaserver: #service on which accounts service depends on
+        condition: service_healthy #dependency condition, accounts service will be created only if the configserver is in healthy_status  
+    environment:
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://eurekaserver:8070/eureka
+

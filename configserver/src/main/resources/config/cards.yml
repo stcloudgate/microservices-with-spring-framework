@@ -1,0 +1,11 @@
+build:
+  version: "3.0"
+
+cards:
+  message: "Welcome to FFC Bank cards related local APIs "
+  contactDetails:
+    name: "Anisha Tiwari - Developer - cards microservice"
+    email: "anisha@futuraforge.com"
+  onCallSupport:
+  - (412) 419-3491
+  - (915) 382-1932

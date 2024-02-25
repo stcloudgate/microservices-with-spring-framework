@@ -1,0 +1,46 @@
+spring:
+  application:
+    name: "configserver"
+  profiles:
+    # active: native #native is requireedfor classpath or filesystem based config stores only
+    active: git
+  cloud:
+    config:
+      server:
+        # native:
+          # search-locations: "classpath:/config"
+          # search-locations: "file:///Users/stmum0107/Documents/workspace-spring-tool-suite-4-4.20.0.RELEASE/configserver/src/main/resources/config"
+        git:
+          uri: "https://github.com/stprojects3006/futuraforge-config.git"
+          default-label: main #look for main branch by default
+          timeout: 5
+          clone-on-start: true #load the configs when config server starte, not when the requrest is made to avoid any loading related latencies
+          force-pull: true # always pull for mteh repo overriding any local changes 
+# Enable all endpoints of actuator - we will consume the refresh endpoint to refresh configurations at runtime
+management:
+  endpoints: #to enable management end-points to be activated for the microservice
+    web:
+      exposure:
+        include: "*"
+  health: #To enable the health-related end-points for supporting the health probes and establishing the container startup sequence dependencies
+    readiness-state:
+      enabled: true
+    liveness-state:
+      enabled: true
+  endpoint:
+    health: # to enable the health-probes while creating the containers - enables to check if the service is started and is healthy, only then next dependent container will be created
+      probes:
+        enabled: true     
+  metrics: #required by micrometer. this tells micrometer & prometheus to group all metrics of this microservices under application name = $(spring.application.name). 
+    tags:
+      application: $(spring.application.name)               
+                  
+encrypt:
+  key: "010701242212ANISANJSARANS243122" # key using which the configs are encrypted in the conig-store, in production pull it from key-vaults.
+
+server:
+  port: 8071
+  
+logging:
+  pattern:
+    level: "%5p [${spring.application.name},%X{trace_id},%X{span_id}]"  

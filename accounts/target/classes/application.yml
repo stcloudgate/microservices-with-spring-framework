@@ -1,0 +1,121 @@
+server:
+  port: 8080
+spring:
+  application:
+    name: "accounts"
+  profiles:
+    active: "prod"
+  datasource:
+# H2 configurations start here --  
+    url: jdbc:h2:mem:testdb
+    driverClassName: org.h2.Driver
+    username: sa
+    password: ''
+  h2:
+    console:
+      enabled: true
+  jpa:
+    database-platform: org.hibernate.dialect.H2Dialect
+    hibernate:
+      ddl-auto: update
+    show-sql: true
+# H2 configurations end here --
+  config:
+    import: "optional:configserver:http://localhost:8071/"
+  cloud:
+    openfeign: # indicates that the following configs are for openfeign
+      circuitbreaker: # activates the circuit-breaker for all openfeign clients inside accounts microservice 
+        enabled: true    
+  
+# settings to expose all actuator endpoints - to implement auto-refresh capability    
+management:
+  endpoints: #to enable management end-points to be included in the expose list for the microservice
+    web:
+      exposure:
+        include: "*"
+  health: #To enable the health-related end-points for supporting the health probes and establishing the container startup sequence dependencies
+    readiness-state:
+      enabled: true
+    liveness-state:
+      enabled: true        
+  endpoint: # to enable actuator url for degistering from eureka server upon shutdown - for graceful shutdowns
+    shutdown:
+      enabled: true  
+    health: # to enable the health-probes while creating the containers - enables to check if the service is started and is healthy, only then next dependent container will be created 
+      probes:
+        enabled: true            
+  info: #the information for eureka dashboard is deliverd using actuator endpoints - this setting enables info related actuator urls & causes picking of details mentioned in info tag below.
+    env:
+      enabled: true
+  metrics: #required by micrometer. this tells micrometer & prometheus to group all metrics of this microservices under application name = $(spring.application.name). 
+    tags:
+      application: $(spring.application.name)    
+
+endpoints: #Exposes the shutdown related APIs from actuator endpoints
+  shutdown:
+    enabled: true
+
+eureka: #Configurations required for eureka client
+  instance:
+    preferIpAddress: true #Causes registration of accounts service using ip address of accounts, hostnames are used typically when DNS is attached
+  client:
+    fetchRegistry: true #to fetch teh registry
+    registerWithEureka: true #to register with eureka server
+    serviceUrl:
+      defaultZone: http://localhost:8070/eureka/ #endpoint of eureka server
+
+info: #Information that appears in eureka dashboard
+  app:
+    name: "accounts" #name
+    description: "FFC Bank Accounts Application"
+    version: "1.0.0"
+        
+logging: # telling the springboot framework to print all looging messages in futuraforge package, that are of type debug.
+  level:
+    com:
+      futuraforge:
+        accounts: DEBUG  
+  pattern:
+    level: "%5 [$(spring.application.name), %X{trace_id}, %X{span_id}]" #PAtern for open telemetry tracing       
+        
+resilience4j.circuitbreaker: #root element for circuit breaker configurations
+  configs:
+    default:
+      slidingWindowSize: 10 #Number of requests to monitor for moving to pen state from closed state
+      permittedNumberOfCallsInHalfOpenState: 2 #number of requests to be passed when the circuit is in half-open state
+      failureRateThreshold: 50 #threshold in percentage to be taken as condition for moving to open state. if 50% request is failed, the circuit wil go to open state in this case.
+      waitDurationInOpenState: 10000 #time for circuit breaker to wait in open-state before attempting verify the availability of micro-service 
+
+resilience4j.retry: #root element for retry configurations, to refer to a specific instance, you can use the name defined in retry settings - build-info controller for example
+  configs: # this tag name can be instances, pls refer to the documentations at https://resilience4j.readme.io/docs/getting-started-3  
+    default:
+      maxAttempts: 3 #max numner of retries
+      waitDuration: 500 #wait period in milli-seconds for attempting the retries. note if this value is higher than gateway server, the gatewayserver will invoke the circuit-breaker and return that message api response. to see the message from microservice, either enhance the circuit-breaker timeout or lower this value than gateway server
+      enableExponentialBackoff: true # use backoff paths in exponential terms for executing retries
+      exponentialBackoffMultiplier: 2 #factor to be considered for following backoff path during retries
+      ignoreExceptions: # tage defines which are the exceptions to be ignored for Retry operations. if this is defined, retryExceptions Tag should not be defined
+      - java.lang.NullPointerException # anyone to be defined - ignoreExceptions OR retryExceptions
+      retryExceptions: # defines which exceptions are to be retried, if this is defined, ignoreExceptions Tag should not be defined
+      - java.util.concurrent.TimeoutException  # anyone to be defined - ignoreExceptions OR retryExceptions
+
+resilience4j.ratelimiter: # root element to setup rate-limiter pattern
+  configs:
+    default: # config applicable to all apis by defaule
+      timeoutDuration: 1000 #timeout period for request thread to wait for arrival of new limitRefresh to happen and new quota to arrive.
+      limitRefreshPeriod: 5000 #for every 5seconds, quota will be renewed      
+      limitForPeriod: 1 #the quota will be renewed by 1 after limitRefreshPeriod
+      
+      
+      
+      
+         
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    

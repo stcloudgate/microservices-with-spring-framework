@@ -1,0 +1,79 @@
+
+spring:
+  application:
+    name: "gatewayserver"
+  config:
+    #settings for config server client - location of config server  
+    import: "optional:configserver:http://localhost:8071/"
+  cloud:
+    gateway:
+      discovery: #This seting tell the gateway server to connect ot discovery server [eureka] and
+        locator: #locate all the microservices and once located, use that information to forward all external traffic to located microservices
+          enabled: false #causes display of only essential information in resultset for routes query --> /gatewayserver/routes path. setting to tru will add more details
+          lowerCaseServiceId: true #to acept the service names in lower case                
+
+      #configure the properties for httpclient to microservice (gateway server itself).
+      # global configurations at gateway level. For circuit-breakers, the global value will be overridden by circuit-breaker timeout values - default is 1s
+      httpclient:        
+        connect-timeout: 1000 # timeout value in ms for connecting to microservices
+        response-timeout: 10s  # timeout value of response time from microservices         
+  data:
+    redis: #connection settings for redis server running locally
+      connect-timeout: 2s
+      host: localhost
+      port: 6379
+      timeout: 1s
+      
+  security: # LEt getway server know what is the oauth server and where to et the token from
+    oauth2:
+      resourceserver:
+        jwt:
+          jwk-set-uri: "http://localhost:7080/realms/master/protocol/openid-connect/certs"      
+          
+# settings to expose all actuator endpoints - to implement auto-refresh capability    
+management:
+  endpoints: #to enable management end-points to be included in the expose list for the microservice
+    web:
+      exposure:
+        include: "*"
+  endpoint: #this setting is to enable gateway related endpoints inside the actuator
+    gateway:
+      enabled: true       
+  info: #the information for eureka dashboard is deliverd using actuator endpoints - this setting enables info related actuator urls & causes picking of details mentioned in info tag below.
+    env:
+      enabled: true
+  metrics: #required by micrometer. this tells micrometer & prometheus to group all metrics of this microservices under application name = $(spring.application.name). 
+    tags:
+      application: $(spring.application.name)        
+
+info: #Information that appears in eureka dashboard
+  app:
+    name: "gatewayseever" #name
+    description: "FFC Bank gateway server Application"
+    version: "1.0.0"
+    
+logging: # telling the springboot framework to print all looging messages in futuraforge package, that are of type debug.
+  level:
+    com:
+      futuraforge:
+        gatewayserver: DEBUG
+  pattern:
+    level: "%5p [${spring.application.name},%X{trace_id},%X{span_id}]"        
+        
+resilience4j.circuitbreaker: #root element for circuit breaker configurations
+  configs:
+    default:
+      slidingWindowSize: 10 #Number of requests to monitor for moving to pen state from closed state
+      permittedNumberOfCallsInHalfOpenState: 2 #number of requests to be passed when the circuit is in half-open state
+      failureRateThreshold: 50 #threshold in percentage to be taken as condition for moving to open state. if 50% request is failed, the circuit wil go to open state in this case.
+      waitDurationInOpenState: 10000 #time for circuit breaker to wait in open-state before attempting verify the availability of micro-service
+      
+      
+      
+      
+      
+      
+      
+      
+            
+    

@@ -1,0 +1,338 @@
+services: #Service here is actually the container
+#==== Observability services - begins =============================
+  read: #Read component of loki for reading the logs for Graphana UI
+    image: grafana/loki:2.9.2
+    command: "-config.file=/etc/loki/config.yaml -target=read" #runs the command for the container
+    ports:
+      - 3101:3100
+      - 7946
+      - 9095
+    volumes:
+      - ../observability/loki/loki-config.yaml:/etc/loki/config.yaml #mounts the volume where config file is stored
+    depends_on:
+      - minio
+    healthcheck: #maintains the helth check after starting the service.
+      test: [ "CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3100/ready || exit 1" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: &loki-dns #sets a variable - loki-dns, to store the networks tag and underneath elements.
+      futuraforge:
+        aliases:
+          - loki
+
+  write: #Write component of loki for writing the logs to minio, incoming records from promtail-->gateway server-->write component
+    image: grafana/loki:2.9.2
+    command: "-config.file=/etc/loki/config.yaml -target=write" #runs the command for the container
+    ports:
+      - 3102:3100
+      - 7946
+      - 9095
+    volumes:
+      - ../observability/loki/loki-config.yaml:/etc/loki/config.yaml #mounts the volume where config file is stored
+    healthcheck: #maintains the helth check after starting the service.
+      test: [ "CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3100/ready || exit 1" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    depends_on:
+      - minio
+    networks: 
+      <<: *loki-dns # injects the variable value into the yml
+
+  # for architecture about promptail and loki - https://grafana.com/docs/loki/latest/get-started/ 
+  promtail: #log collector for graphana, writes the application logs to gateway server that in turn writes to minio using Loki write component.
+    image: grafana/promtail:2.9.2
+    volumes:
+      - ../observability/promtail/promtail-local-config.yaml:/etc/promtail/config.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: -config.file=/etc/promtail/config.yaml
+    depends_on:
+      - gateway #promtail requires gateway to be available since it will write via gateway server
+    extends:
+      file: common-config.yml
+      service: network-deploy-service #use the network settings from common file to make redis part of same network
+
+  minio: # is the data store for graphana, the database where agents will push the logs and metrics
+    image: minio/minio
+    entrypoint:
+      - sh
+      - -euc
+      - |
+        mkdir -p /data/loki-data && \
+        mkdir -p /data/loki-ruler && \
+        minio server /data
+    environment:
+      - MINIO_ROOT_USER=loki
+      - MINIO_ROOT_PASSWORD=supersecret
+      - MINIO_PROMETHEUS_AUTH_TYPE=public
+      - MINIO_UPDATE=off
+    ports:
+      - 9000
+    volumes:
+      - ./.data/minio:/data
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:9000/minio/health/live" ]
+      interval: 15s
+      timeout: 20s
+      retries: 5
+    extends:
+      file: common-config.yml
+      service: network-deploy-service #use the network settings from common file to make redis part of same network
+
+  #prometheus requires micrometer to understand the metrics provided by actuator. micrometer converts the actuator metrics to a a format that monitoring system can understand - prometheus in this case.
+  prometheus: #for extracting and aggregating all the metrics from microservices instances, leveraging micrometer. 
+    image: prom/prometheus:v2.48.0
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ../observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+    extends:
+      file: common-config.yml
+      service: network-deploy-service
+
+  tempo: # is a component required to index the tracing informations sourced by openTelemetry and supply the same graphana
+    image: grafana/tempo
+    container_name: tempo
+    command: -config.file /etc/tempo-config.yml
+    ports:
+      - "3110:3100"
+      - "4317:4317"
+    volumes:
+      - ../observability/tempo/tempo.yml:/etc/tempo-config.yml
+    extends:
+      file: common-config.yml
+      service: network-deploy-service
+
+  grafana:
+    image: grafana/grafana:latest
+    environment:
+      - GF_PATHS_PROVISIONING=/etc/grafana/provisioning
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+    depends_on:
+      - gateway
+    entrypoint:
+      - sh
+      - -euc
+      - |
+        /run.sh
+    ports:
+      - "3000:3000"
+    volumes:
+      - ../observability/grafana/datasource.yml:/etc/grafana/provisioning/datasources/datasource.yml      
+    healthcheck:
+      test: [ "CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    extends:
+      file: common-config.yml
+      service: network-deploy-service #use the network settings from common file to make redis part of same network
+
+  gateway:
+    image: nginx:latest
+    depends_on:
+      - read
+      - write
+    entrypoint:
+      - sh
+      - -euc
+      - |
+        cat <<EOF > /etc/nginx/nginx.conf
+        user  nginx;
+        worker_processes  5;  ## Default: 1
+
+        events {
+          worker_connections   1000;
+        }
+
+        http {
+          resolver 127.0.0.11;
+
+          server {
+            listen             3100;
+
+            location = / {
+              return 200 'OK';
+              auth_basic off;
+            }
+
+            location = /api/prom/push {
+              proxy_pass       http://write:3100\$$request_uri;
+            }
+
+            location = /api/prom/tail {
+              proxy_pass       http://read:3100\$$request_uri;
+              proxy_set_header Upgrade \$$http_upgrade;
+              proxy_set_header Connection "upgrade";
+            }
+
+            location ~ /api/prom/.* {
+              proxy_pass       http://read:3100\$$request_uri;
+            }
+
+            location = /loki/api/v1/push {
+              proxy_pass       http://write:3100\$$request_uri;
+            }
+
+            location = /loki/api/v1/tail {
+              proxy_pass       http://read:3100\$$request_uri;
+              proxy_set_header Upgrade \$$http_upgrade;
+              proxy_set_header Connection "upgrade";
+            }
+
+            location ~ /loki/api/.* {
+              proxy_pass       http://read:3100\$$request_uri;
+            }
+          }
+        }
+        EOF
+        /docker-entrypoint.sh nginx -g "daemon off;"
+    ports:
+      - "3100:3100"
+    healthcheck:
+      test: ["CMD", "service", "nginx", "status"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    extends:
+      file: common-config.yml
+      service: network-deploy-service #use the network settings from common file to make redis part of same network
+#==== Observability services - ends =============================
+
+  redis: #redis service required for rete-limiter patern
+    image: redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: [ "CMD-SHELL", "redis-cli ping | grep PONG" ] #As iven in redis official documentations
+      timeout: 20s
+      retries: 20
+    extends:
+      file: common-config.yml
+      service: network-deploy-service #use the network settings from common file to make redis part of same network
+
+  configserver:
+    image: "stmum0107/configserver:s11"
+    container_name: configserver-ms
+    ports:
+      - "8071:8071"    
+    # check if the configserver is ready to accept the traffic, keep probing untill it is ready and then proceed with next service creation  
+    healthcheck:
+      test: "curl --fail --silent localhost:8071/actuator/health/readiness |grep UP || exit 1" 
+      interval: 20s #retry intervals
+      timeout: 5s #inside each check, wait for 5s max to declare the retry attemt as timed out
+      retries: 20 #keep retrying 10 times if there is a failure
+      start_period: 10s #execute teh health check command only ater 10secons
+    extends:
+      file: common-config.yml
+      service: microservices-base-config #extends deployment and network properties to this configserver service
+    environment:
+      OTEL_SERVICE_NAME: "configserver"    #tells openTelemetry the service-name, can be different than application/service name. 
+
+  eurekaserver:
+    image: "stmum0107/eurekaserver:s11"
+    container_name: eurekaserver-ms
+    ports:
+      - "8070:8070"
+    # check if the eurekaserver is ready to accept the registration, keep probing untill it is ready and then proceed with next service creation    
+    healthcheck:
+      test: "curl --fail --silent localhost:8070/actuator/health/readiness |grep UP || exit 1" 
+      interval: 20s #retry intervals
+      timeout: 5s #inside each check, wait for 5s max to declare the retry attemt as timed out
+      retries: 20 #keep retrying 10 times if there is a failure
+      start_period: 10s #execute teh health check command only ater 10secons
+    extends:
+      file: common-config.yml
+      service: microservices-configserver-config #extends deployment and network properties to this eurekaserver service
+    environment:
+      SPRING_APPLICATION_NAME: "eurekaserver" 
+      OTEL_SERVICE_NAME : eurekaserver #tells openTelemetry the service-name, can be different than application/service name.                   
+
+  accounts:
+    image: "stmum0107/accounts:s11"
+    container_name: accounts-ms
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: "curl --fail --silent localhost:8080/actuator/health/readiness |grep UP || exit 1" 
+      interval: 20s #retry intervals
+      timeout: 5s #inside each check, wait for 5s max to declare the retry attemt as timed out
+      retries: 20 #keep retrying 10 times if there is a failure
+      start_period: 10s #execute teh health check command only ater 10secons      
+    environment:
+      SPRING_APPLICATION_NAME: "accounts" #override the application-name defined in application.yml
+      OTEL_SERVICE_NAME : accounts #tells openTelemetry the service-name, can be different than application/service name.                         
+    extends:
+      file: common-config.yml
+      service: microservices-eurekaserver-config
+
+  loans:
+    image: "stmum0107/loans:s11"
+    container_name: loans-ms
+    ports:
+      - "8090:8090"
+    healthcheck:
+      test: "curl --fail --silent localhost:8090/actuator/health/readiness |grep UP || exit 1" 
+      interval: 20s #retry intervals
+      timeout: 5s #inside each check, wait for 5s max to declare the retry attemt as timed out
+      retries: 20 #keep retrying 10 times if there is a failure
+      start_period: 10s #execute teh health check command only ater 10secons         
+    environment:
+      SPRING_APPLICATION_NAME: "loans" #override the application-name defined in application.yml 
+      OTEL_SERVICE_NAME : loans #tells openTelemetry the service-name, can be different than application/service name.                                     
+    extends:
+      file: common-config.yml
+      service: microservices-eurekaserver-config
+           
+  cards:
+    image: "stmum0107/cards:s11"
+    container_name: cards-ms
+    ports:
+      - "9000:9000"
+    healthcheck:
+      test: "curl --fail --silent localhost:9000/actuator/health/readiness |grep UP || exit 1" 
+      interval: 20s #retry intervals
+      timeout: 5s #inside each check, wait for 5s max to declare the retry attemt as timed out
+      retries: 20 #keep retrying 10 times if there is a failure
+      start_period: 10s #execute teh health check command only ater 10secons         
+    environment:
+      SPRING_APPLICATION_NAME: "cards" #override the application-name defined in application.yml  
+      OTEL_SERVICE_NAME : cards #tells openTelemetry the service-name, can be different than application/service name.                                                 
+    extends:
+      file: common-config.yml
+      service: microservices-eurekaserver-config
+      
+  gatewayserver:
+    image: "stmum0107/gatewayserver:s11"
+    container_name: gatewayserver-ms
+    ports:
+      - "8072:8072"
+    depends_on:
+      accounts:
+        condition: service_healthy # start gateway service container once the accounts service is runing and ready       
+      loans:
+        condition: service_healthy # start gateway service container once the loans service is runing and ready       
+      cards:
+        condition: service_healthy # start gateway service container once the cards service is runing and ready       
+      redis:
+        condition: service_healthy # start gateway service container once the redis service is runing and ready                    
+    environment:
+      SPRING_APPLICATION_NAME: "gatewayserver" #override the application-name defined in application.yml
+      OTEL_SERVICE_NAME : gatewayserver #tells openTelemetry the service-name, can be different than application/service name.                                                                        
+      SPRING_DATA_REDIS_CONNECT-TIMEOUT: 2s #conection timeout setting
+      SPRING_DATA_REDIS_HOST: redis #set the host name where redis server is running
+      SPRING_DATA_REDIS_PORT: 6379 #set the port number of redis server
+      SPRING_DATA_REDIS_TIMEOUT: 1s #set the data timeout        
+    extends:
+      file: common-config.yml
+      service: microservices-eurekaserver-config
+
+networks:
+  futuraforge:
+    driver: "bridge" #define the network driver forthe network named as futuraforge in above services
+    
+    
+    

@@ -1,0 +1,129 @@
+services: #Service here is actually the container
+
+  redis: #redis service required for rete-limiter patern
+    image: redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: [ "CMD-SHELL", "redis-cli ping | grep PONG" ] #As iven in redis official documentations
+      timeout: 10s
+      retries: 10
+    extends:
+      file: common-config.yml
+      service: network-deploy-service #use the network settings from common file to make redis part of same network
+
+  configserver:
+    image: "stmum0107/configserver:s10"
+    container_name: configserver-ms
+    ports:
+      - "8071:8071"    
+    # check if the configserver is ready to accept the traffic, keep probing untill it is ready and then proceed with next service creation  
+    healthcheck:
+      test: "curl --fail --silent localhost:8071/actuator/health/readiness |grep UP || exit 1" 
+      interval: 10s #retry intervals
+      timeout: 5s #inside each check, wait for 5s max to declare the retry attemt as timed out
+      retries: 10 #keep retrying 10 times if there is a failure
+      start_period: 10s #execute teh health check command only ater 10secons
+    extends:
+      file: common-config.yml
+      service: microservices-base-config #extends deployment and network properties to this configserver service
+
+  eurekaserver:
+    image: "stmum0107/eurekaserver:s10"
+    container_name: eurekaserver-ms
+    ports:
+      - "8070:8070"
+    # check if the eurekaserver is ready to accept the registration, keep probing untill it is ready and then proceed with next service creation    
+    healthcheck:
+      test: "curl --fail --silent localhost:8070/actuator/health/readiness |grep UP || exit 1" 
+      interval: 10s #retry intervals
+      timeout: 5s #inside each check, wait for 5s max to declare the retry attemt as timed out
+      retries: 10 #keep retrying 10 times if there is a failure
+      start_period: 10s #execute teh health check command only ater 10secons
+    extends:
+      file: common-config.yml
+      service: microservices-configserver-config #extends deployment and network properties to this eurekaserver service
+    environment:
+      SPRING_APPLICATION_NAME: "eurekaserver"             
+
+  accounts:
+    image: "stmum0107/accounts:s10"
+    container_name: accounts-ms
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: "curl --fail --silent localhost:8080/actuator/health/readiness |grep UP || exit 1" 
+      interval: 10s #retry intervals
+      timeout: 5s #inside each check, wait for 5s max to declare the retry attemt as timed out
+      retries: 10 #keep retrying 10 times if there is a failure
+      start_period: 10s #execute teh health check command only ater 10secons      
+    environment:
+      SPRING_APPLICATION_NAME: "accounts" #override the application-name defined in application.yml
+    extends:
+      file: common-config.yml
+      service: microservices-eurekaserver-config
+
+  loans:
+    image: "stmum0107/loans:s10"
+    container_name: loans-ms
+    ports:
+      - "8090:8090"
+    healthcheck:
+      test: "curl --fail --silent localhost:8090/actuator/health/readiness |grep UP || exit 1" 
+      interval: 10s #retry intervals
+      timeout: 5s #inside each check, wait for 5s max to declare the retry attemt as timed out
+      retries: 10 #keep retrying 10 times if there is a failure
+      start_period: 10s #execute teh health check command only ater 10secons         
+    environment:
+      SPRING_APPLICATION_NAME: "loans" #override the application-name defined in application.yml       
+    extends:
+      file: common-config.yml
+      service: microservices-eurekaserver-config
+           
+  cards:
+    image: "stmum0107/cards:s10"
+    container_name: cards-ms
+    ports:
+      - "9000:9000"
+    healthcheck:
+      test: "curl --fail --silent localhost:9000/actuator/health/readiness |grep UP || exit 1" 
+      interval: 10s #retry intervals
+      timeout: 5s #inside each check, wait for 5s max to declare the retry attemt as timed out
+      retries: 10 #keep retrying 10 times if there is a failure
+      start_period: 10s #execute teh health check command only ater 10secons         
+    environment:
+      SPRING_APPLICATION_NAME: "cards" #override the application-name defined in application.yml        
+    extends:
+      file: common-config.yml
+      service: microservices-eurekaserver-config
+      
+  gatewayserver:
+    image: "stmum0107/gatewayserver:s10"
+    container_name: gatewayserver-ms
+    ports:
+      - "8072:8072"
+    depends_on:
+      accounts:
+        condition: service_healthy # start gateway service container once the accounts service is runing and ready       
+      loans:
+        condition: service_healthy # start gateway service container once the loans service is runing and ready       
+      cards:
+        condition: service_healthy # start gateway service container once the cards service is runing and ready       
+      redis:
+        condition: service_healthy # start gateway service container once the redis service is runing and ready                    
+    environment:
+      SPRING_APPLICATION_NAME: "gatewayserver" #override the application-name defined in application.yml
+      SPRING_DATA_REDIS_CONNECT-TIMEOUT: 2s #conection timeout setting
+      SPRING_DATA_REDIS_HOST: redis #set the host name where redis server is running
+      SPRING_DATA_REDIS_PORT: 6379 #set the port number of redis server
+      SPRING_DATA_REDIS_TIMEOUT: 1s #set the data timeout             
+    extends:
+      file: common-config.yml
+      service: microservices-eurekaserver-config
+
+networks:
+  futuraforge:
+    driver: "bridge" #define the network driver forthe network named as futuraforge in above services
+    
+    
+    

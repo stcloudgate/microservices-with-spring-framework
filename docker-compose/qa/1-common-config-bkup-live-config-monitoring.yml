@@ -1,0 +1,22 @@
+services:
+  network-deploy-service:
+    networks:
+      - futuraforge #all services that are in this network will be able to communicate using the service name 
+  microservices-base-config:
+    extends:
+      service: network-deploy-service
+    deploy:
+      resources: #deploy resource constraints like memory, storage ro cpu
+        limits:
+          memory: 700m
+    environment: 
+      SPRING_RABBITMQ_HOST: "rabbit"    
+  microservices-configserver-config:
+    extends:
+      service: microservices-base-config
+    depends_on: #defines a dependency criteria for the service
+      configserver: #service on which accounts service depends on
+        condition: service_healthy #dependency condition, accounts service will be created only if the configserver is in healthy_status  
+    environment:
+      SPRING_CONFIG_IMPORT: "configserver:http://configserver:8071/" #overrides the config server connection defined in local application.yml file
+      SPRING_PROFILES_ACTIVE: qa #override the active profile defined in the application.yml 

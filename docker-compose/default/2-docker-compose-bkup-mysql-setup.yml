@@ -1,0 +1,101 @@
+services: #Service here is actually the container
+# accountsdb databse server container
+  accountsdb:
+    container_name: accountsdb 
+    ports:
+    - 3306:3306
+    environment:
+      MYSQL_DATABASE: accountsdb
+    extends:
+      file: common-config.yml
+      service: microservice-db-config
+
+#loansdb database server container
+  loansdb:
+    container_name: loansdb
+    ports:
+    - 3307:3306
+    environment:
+      MYSQL_DATABASE: loansdb
+    extends:
+      file: common-config.yml
+      service: microservice-db-config
+  
+#cards database server container
+  cardsdb:
+    container_name: cardsdb
+    ports:
+    - 3308:3306
+    environment:
+      MYSQL_DATABASE: cardsdb
+    extends:
+      file: common-config.yml
+      service: microservice-db-config
+
+  configserver:
+    image: "stmum0107/configserver:s7"
+    container_name: configserver-ms
+    ports:
+      - "8071:8071"    
+    # check if the configserver is ready to accept the traffic, keep probing untill it is ready and then proceed with next service creation  
+    healthcheck:
+      test: "curl --fail --silent localhost:8071/actuator/health/readiness |grep UP || exit 1" 
+      interval: 10s #retry intervals
+      timeout: 5s #inside each check, wait for 5s max to declare the retry attemt as timed out
+      retries: 10 #keep retrying 10 times if there is a failure
+      start_period: 10s #execute teh health check command only ater 10secons
+    extends:
+      file: common-config.yml
+      service: microservices-base-config #extends deployment and network properties to this configserver serviice
+      
+  accounts:
+    image: "stmum0107/accounts:s7"
+    container_name: accounts-ms
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_APPLICATION_NAME: "accounts" #override the application-name defined in application.yml
+      SPRING_DATASOURCE_URL: "jdbc:mysql://accountsdb:3306/accountsdb"
+    depends_on:
+      accountsdb:
+        condition: service_healthy
+    extends:
+      file: common-config.yml
+      service: microservices-configserver-config
+        
+  loans:
+    image: "stmum0107/loans:s7"
+    container_name: loans-ms
+    ports:
+      - "8090:8090"
+    environment:
+      SPRING_APPLICATION_NAME: "loans" #override the application-name defined in application.yml       
+      SPRING_DATASOURCE_URL: "jdbc:mysql://loansdb:3306/accountsdb"
+    depends_on:
+      loansdb:
+        condition: service_healthy      
+    extends:
+      file: common-config.yml
+      service: microservices-configserver-config
+           
+  cards:
+    image: "stmum0107/cards:s7"
+    container_name: cards-ms
+    ports:
+      - "9000:9000"
+    environment:
+      SPRING_APPLICATION_NAME: "cards" #override the application-name defined in application.yml 
+      SPRING_DATASOURCE_URL: "jdbc:mysql://cardsdb:3306/accountsdb"  
+    depends_on:
+      cardsdb:
+        condition: service_healthy          
+    extends:
+      file: common-config.yml
+      service: microservices-configserver-config
+      
+networks:
+  futuraforge:
+    driver: "bridge" #define the network driver forthe network named as futuraforge in above services
+    
+    
+    

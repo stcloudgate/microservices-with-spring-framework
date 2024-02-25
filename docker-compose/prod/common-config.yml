@@ -1,0 +1,36 @@
+services:
+  network-deploy-service:
+    networks:
+      - futuraforge #all services that are in this network will be able to communicate using the service name     
+
+  microservices-base-config:
+    extends:
+      service: network-deploy-service
+    deploy:
+      resources: #deploy resource constraints like memory, storage ro cpu
+        limits:
+          memory: 700m
+    environment: #note: the version of opentelemetry-javaagent-<>.jar must match with one the specified in pom.xml to avoid any error.
+      JAVA_TOOL_OPTIONS: "-javaagent:/app/libs/opentelemetry-javaagent-1.27.0.jar" #required for open telemetry, path where openTelemetry will be running. since the openTelemetry dependency is defined in pom.xml, it will be available at this path in container
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo:4317 #tempo services, open telemetry is going to add al tracing details to this tempo service
+      OTEL_METRICS_EXPORTER: none #for metrics export, we are using prometheus and will not be using tempo/openTelemetry, hence it is set to none
+      
+  microservices-configserver-config:
+    extends:
+      service: microservices-base-config
+    depends_on: #defines a dependency criteria for the service
+      configserver: #service on which mocroservices depend on
+        condition: service_healthy #dependency condition, accounts service will be created only if the configserver is in healthy_status  
+    environment:
+      SPRING_PROFILES_ACTIVE: prod #override the active profile defined in the application.yml 
+      SPRING_CONFIG_IMPORT: "configserver:http://configserver:8071/" #overrides the config server connection defined in local application.yml file
+
+  microservices-eurekaserver-config:
+    extends:
+      service: microservices-configserver-config
+    depends_on: #defines a dependency criteria for the service
+      eurekaserver: #service on which accounts service depends on
+        condition: service_healthy #dependency condition, accounts service will be created only if the configserver is in healthy_status  
+    environment:
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://eurekaserver:8070/eureka
+

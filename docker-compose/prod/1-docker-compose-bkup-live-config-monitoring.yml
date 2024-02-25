@@ -1,0 +1,104 @@
+services: #Service here is actually the container
+  rabbit:
+    image: rabbitmq:3.12-management
+    hostname: rabbitmq
+    ports:
+      - "5672:5672" #port for the core component
+      - "15672:15672" #port for the management component
+
+    # check if the configserver is ready to accept the traffic, keep probing untill it is ready and then proceed with next service creation      
+    healthcheck:
+      test: rabbitmq-diagnostics check_port_connectivity
+      interval: 10s #retry intervals
+      timeout: 5s #inside each check, wait for 5s max to declare the retry attemt as timed out
+      retries: 10 #keep retrying 10 times if there is a failure
+      start_period: 5s #execute teh health check command only ater 10secons
+    networks:
+      - futuraforge     
+
+  configserver:
+    image: "stmum0107/configserver:s6"
+    container_name: configserver-ms
+    ports:
+      - "8071:8071"    
+    depends_on: #defines a dependency criteria for the service
+      rabbit: #service on which accounts service depends on
+        condition: service_healthy #dependency condition, accounts service will be created only if the configserver is in healthy_status
+
+    # check if the configserver is ready to accept the traffic, keep probing untill it is ready and then proceed with next service creation  
+    healthcheck:
+      test: "curl --fail --silent localhost:8071/actuator/health/readiness |grep UP || exit 1" 
+      interval: 10s #retry intervals
+      timeout: 5s #inside each check, wait for 5s max to declare the retry attemt as timed out
+      retries: 10 #keep retrying 10 times if there is a failure
+      start_period: 10s #execute teh health check command only ater 10secons
+    deploy:
+      resources:
+        limits:
+          memory: 700m
+    networks:
+      - futuraforge
+      
+  accounts:
+    image: "stmum0107/accounts:s6"
+    container_name: accounts-ms
+    ports:
+      - "8080:8080"
+    depends_on: #defines a dependency criteria for the service
+      configserver: #service on which accounts service depends on
+        condition: service_healthy #dependency condition, accounts service will be created only if the configserver is in healthy_status
+    deploy:
+      resources: #deploy resource constraints like memory, storage ro cpu
+        limits:
+          memory: 700m
+    networks:
+      - futuraforge #all services that are in this network will be able to communicate using the service name 
+    environment:
+      SPRING_APPLICATION_NAME: "accounts" #override the application-name defined in application.yml       
+      SPRING_CONFIG_IMPORT: "configserver:http://configserver:8071/" #overrides the config server connection defined in local application.yml file
+      SPRING_PROFILES_ACTIVE: default #override the active profile defined in the application.yml 
+       
+  loans:
+    image: "stmum0107/loans:s6"
+    container_name: loans-ms
+    ports:
+      - "8090:8090"
+    depends_on: #defines a dependency criteria for the service
+      configserver: #service on which accounts service depends on
+        condition: service_healthy #dependency condition, accounts service will be created only if the configserver is in healthy_status
+    deploy:
+      resources: #deploy resource constraints like memory, storage ro cpu
+        limits:
+          memory: 700m
+    networks:
+      - futuraforge #all services that are in this network will be able to communicate using the service name 
+    environment:
+      SPRING_APPLICATION_NAME: "loans" #override the application-name defined in application.yml       
+      SPRING_CONFIG_IMPORT: "configserver:http://configserver:8071/" #overrides the config server connection defined in local application.yml file
+      SPRING_PROFILES_ACTIVE: default #override the active profile defined in the application.yml 
+           
+  cards:
+    image: "stmum0107/cards:s6"
+    container_name: cards-ms
+    ports:
+      - "9000:9000"
+    depends_on: #defines a dependency criteria for the service
+      configserver: #service on which accounts service depends on
+        condition: service_healthy #dependency condition, accounts service will be created only if the configserver is in healthy_status
+    deploy:
+      resources: #deploy resource constraints like memory, storage ro cpu
+        limits:
+          memory: 700m
+    networks:
+      - futuraforge #all services that are in this network will be able to communicate using the service name 
+    environment:
+      SPRING_APPLICATION_NAME: "cards" #override the application-name defined in application.yml       
+      SPRING_CONFIG_IMPORT: "configserver:http://configserver:8071/" #overrides the config server connection defined in local application.yml file
+      SPRING_PROFILES_ACTIVE: default #override the active profile defined in the application.yml 
+      
+networks:
+  futuraforge:
+    driver: "bridge" #define the network driver forthe network named as futuraforge in above services
+    
+    
+    
